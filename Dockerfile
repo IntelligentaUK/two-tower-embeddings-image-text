@@ -1,25 +1,10 @@
 # Two-Tower Embeddings API Dockerfile
-# Supports CUDA for GPU acceleration
+# Uses official NVIDIA PyTorch image for optimal GPU support
 
-FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
-
-# Prevent interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
+FROM nvcr.io/nvidia/pytorch:latest
 
 # Set Python to not buffer stdout/stderr
 ENV PYTHONUNBUFFERED=1
-
-# Install Python 3.11 and required system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 \
-    python3.11-venv \
-    python3.11-dev \
-    python3-pip \
-    git \
-    curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
-    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
 
 # Create working directory
 WORKDIR /app
@@ -27,10 +12,9 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies with CUDA-enabled PyTorch
-RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu124 && \
-    pip3 install --no-cache-dir -r requirements.txt
+# Install additional Python dependencies (PyTorch already included in base image)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir transformers accelerate pillow fastapi "uvicorn[standard]" httpx
 
 # Copy application code
 COPY api.py .
@@ -49,4 +33,3 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=300s --retries=3 \
 
 # Run the API server
 CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
-
