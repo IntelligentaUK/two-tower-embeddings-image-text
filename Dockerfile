@@ -5,10 +5,13 @@ FROM nvcr.io/nvidia/pytorch:24.01-py3
 
 # Set Python to not buffer stdout/stderr
 ENV PYTHONUNBUFFERED=1
+
+# Default port (RunPod may override this)
 ENV PORT=8000
+
 # Create working directory
 WORKDIR /app
- 
+
 # Copy requirements first for better caching
 COPY requirements.txt .
 
@@ -25,11 +28,11 @@ ENV HF_HOME=/app/.cache/huggingface
 RUN mkdir -p $HF_HOME
 
 # Expose the API port
-EXPOSE 8000
+EXPOSE ${PORT}
 
-# Health check
+# Health check using PORT variable
 HEALTHCHECK --interval=30s --timeout=30s --start-period=300s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run the API server
-CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the API server with dynamic port
+CMD python -m uvicorn api:app --host 0.0.0.0 --port ${PORT}
