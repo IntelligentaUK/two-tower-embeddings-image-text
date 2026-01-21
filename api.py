@@ -8,20 +8,34 @@ Uses:
 
 import base64
 import io
+import json
+import logging
+import os
+import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import List, Optional, Union
 
 import httpx
 import torch
-import json
-
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel, Field, model_validator
 from transformers import AutoModel, AutoProcessor, AutoTokenizer
 from transformers.modeling_utils import PreTrainedModel
 from transformers.processing_utils import ProcessorMixin
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# Server port (for RunPod compatibility)
+PORT = int(os.environ.get("PORT", 8000))
 
 # Model checkpoints
 IMAGE_CKPT = "google/siglip2-giant-opt-patch16-384"
@@ -179,19 +193,22 @@ async def lifespan(app: FastAPI):
     """Load models on startup and cleanup on shutdown."""
     global image_processor, image_model, text_tokenizer, text_model, http_client
     
-    print("Loading image model...")
+    logger.info("Loading image model: %s", IMAGE_CKPT)
     image_processor, image_model = load_image_model()
-    print(f"Image model loaded on device: {image_model.device}")
+    logger.info("Image model loaded on device: %s", image_model.device)
     
-    print("Loading text model...")
+    logger.info("Loading text model: %s", TEXT_CKPT)
     text_tokenizer, text_model = load_text_model()
-    print(f"Text model loaded on device: {text_model.device}")
+    logger.info("Text model loaded on device: %s", text_model.device)
     
     http_client = httpx.AsyncClient()
+    
+    logger.info("Server ready on port %d", PORT)
     
     yield
     
     # Cleanup
+    logger.info("Shutting down...")
     await http_client.aclose()
 
 
@@ -203,10 +220,17 @@ app = FastAPI(
 )
 
 
+@app.get("/ping")
+async def ping():
+    """Simple ping endpoint for RunPod and load balancer health checks."""
+    return "pong"
+
+
 @app.get("/health", response_model=HealthResponse, response_class=PrettyJSONResponse)
 async def health_check():
     """Check the health status of the API and loaded models."""
     device = str(image_model.device) if image_model else "not loaded"
+    logger.info("Health check: status=healthy, device=%s", device)
     return HealthResponse(
         status="healthy",
         image_model=IMAGE_CKPT,
@@ -227,11 +251,24 @@ async def create_embeddings(request: EmbedRequest):
     
     Returns normalized embedding vectors for each input.
     """
+    # Generate request ID and start timing
+    request_id = str(uuid.uuid4())[:8]
+    start_time = time.perf_counter()
+    
     # Normalize input to list
     items = request.items if isinstance(request.items, list) else [request.items]
     
+    # Count request types
+    num_images = sum(1 for item in items if item.image_url or item.image_base64)
+    num_texts = sum(1 for item in items if item.text_input)
+    
+    logger.info(
+        "[%s] Request received: %d item(s) - %d image(s), %d text(s)",
+        request_id, len(items), num_images, num_texts
+    )
+    
     results = []
-    for item in items:
+    for idx, item in enumerate(items):
         image_emb = None
         image_dims = None
         text_emb = None
@@ -239,6 +276,9 @@ async def create_embeddings(request: EmbedRequest):
         
         # Process image if provided
         if item.image_url or item.image_base64:
+            source = "url" if item.image_url else "base64"
+            logger.info("[%s] Processing image %d/%d (%s)", request_id, idx + 1, len(items), source)
+            
             if item.image_url:
                 image = await load_image_from_url(item.image_url)
             else:
@@ -246,13 +286,14 @@ async def create_embeddings(request: EmbedRequest):
             
             image_emb = compute_image_embedding(image)
             image_dims = len(image_emb)
-            print(f"[DEBUG] Computed IMAGE embedding with {image_dims} dimensions")
         
         # Process text if provided
         if item.text_input:
+            text_preview = item.text_input[:50] + "..." if len(item.text_input) > 50 else item.text_input
+            logger.info("[%s] Processing text %d/%d: '%s'", request_id, idx + 1, len(items), text_preview)
+            
             text_emb = compute_text_embedding(item.text_input)
             text_dims = len(text_emb)
-            print(f"[DEBUG] Computed TEXT embedding with {text_dims} dimensions")
         
         result = EmbedResult(
             image_embedding=image_emb,
@@ -262,6 +303,9 @@ async def create_embeddings(request: EmbedRequest):
         )
         results.append(result)
     
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    logger.info("[%s] Request completed in %.2fms", request_id, elapsed_ms)
+    
     response = EmbedResponse(results=results)
     # Use model_dump to include None values explicitly
     return response.model_dump()
@@ -269,5 +313,6 @@ async def create_embeddings(request: EmbedRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info("Starting server on port %d", PORT)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
 
