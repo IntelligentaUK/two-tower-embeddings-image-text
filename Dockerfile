@@ -5,7 +5,7 @@ FROM nvcr.io/nvidia/pytorch:25.12-py3
 
 # Set Python to not buffer stdout/stderr
 ENV PYTHONUNBUFFERED=1
-
+ENV PORT=8000
 # Create working directory
 WORKDIR /app
  
