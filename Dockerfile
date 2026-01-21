@@ -1,14 +1,14 @@
 # Two-Tower Embeddings API Dockerfile
 # Uses official NVIDIA PyTorch image for optimal GPU support
 
-FROM nvcr.io/nvidia/pytorch:latest
+FROM nvcr.io/nvidia/pytorch:25.12-py3
 
 # Set Python to not buffer stdout/stderr
 ENV PYTHONUNBUFFERED=1
 
 # Create working directory
 WORKDIR /app
-
+ 
 # Copy requirements first for better caching
 COPY requirements.txt .
 
