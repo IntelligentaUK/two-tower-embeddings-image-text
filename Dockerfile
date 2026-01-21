@@ -8,7 +8,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Create working directory
 WORKDIR /app
-
+ 
 # Copy requirements first for better caching
 COPY requirements.txt .
 
