@@ -222,21 +222,10 @@ app = FastAPI(
 
 @app.get("/ping")
 async def ping():
-    """Simple ping endpoint for RunPod and load balancer health checks."""
-    return "pong"
-
-
-@app.get("/health", response_model=HealthResponse, response_class=PrettyJSONResponse)
-async def health_check():
-    """Check the health status of the API and loaded models."""
-    device = str(image_model.device) if image_model else "not loaded"
-    logger.info("Health check: status=healthy, device=%s", device)
-    return HealthResponse(
-        status="healthy",
-        image_model=IMAGE_CKPT,
-        text_model=TEXT_CKPT,
-        device=device,
-    ).model_dump()
+    """Simple ping endpoint - returns healthy only after models are loaded."""
+    if image_model is None or text_model is None:
+        return {"status": "loading"}
+    return {"status": "healthy"}
 
 
 @app.post("/embed", response_model=EmbedResponse, response_class=PrettyJSONResponse)
