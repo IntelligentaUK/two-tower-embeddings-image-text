@@ -215,10 +215,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Two-Tower Embeddings API",
     description="Generate text and image embeddings using SigLIP2 and EmbeddingGemma models",
-    version="1.0.0",
+    version="1.0.1",
     lifespan=lifespan,
 )
-
 
 @app.get("/ping")
 async def ping():
@@ -298,7 +297,6 @@ async def create_embeddings(request: EmbedRequest):
     response = EmbedResponse(results=results)
     # Use model_dump to include None values explicitly
     return response.model_dump()
-
 
 if __name__ == "__main__":
     import uvicorn
