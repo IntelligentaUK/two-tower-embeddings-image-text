@@ -14,7 +14,8 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import List, Optional, Union
+from enum import Enum
+from typing import List, Optional
 
 import httpx
 import torch
@@ -130,8 +131,16 @@ def load_image_from_base64(base64_string: str) -> Image.Image:
 
 
 # Pydantic models
+class EmbedMode(str, Enum):
+    """Mode for embedding generation."""
+    TEXT_ONLY = "text_only"
+    IMAGE_ONLY = "image_only"
+    BOTH = "both"
+
+
 class EmbedItem(BaseModel):
     """Single item for embedding generation."""
+    id: str = Field(..., description="Unique identifier for this item")
     image_url: Optional[str] = Field(default=None, description="URL of the image to embed")
     image_base64: Optional[str] = Field(default=None, description="Base64 encoded image data")
     text_input: Optional[str] = Field(default=None, description="Text to embed")
@@ -147,14 +156,19 @@ class EmbedItem(BaseModel):
 
 class EmbedRequest(BaseModel):
     """Request body for embedding endpoint."""
-    items: Union[EmbedItem, List[EmbedItem]] = Field(
+    items: List[EmbedItem] = Field(
         ..., 
-        description="Single item or list of items to generate embeddings for"
+        description="List of items to generate embeddings for"
+    )
+    embed_mode: EmbedMode = Field(
+        default=EmbedMode.BOTH,
+        description="Which embeddings to generate: text_only, image_only, or both (default)"
     )
 
 
 class EmbedResult(BaseModel):
     """Result for a single embedding request."""
+    id: str = Field(..., description="Unique identifier for this item")
     image_embedding: Optional[List[float]] = Field(
         default=None, 
         description="Normalized image embedding vector (1536 dimensions)"
@@ -215,28 +229,16 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Two-Tower Embeddings API",
     description="Generate text and image embeddings using SigLIP2 and EmbeddingGemma models",
-    version="1.0.0",
+    version="1.0.1",
     lifespan=lifespan,
 )
 
-
 @app.get("/ping")
 async def ping():
-    """Simple ping endpoint for RunPod and load balancer health checks."""
-    return "pong"
-
-
-@app.get("/health", response_model=HealthResponse, response_class=PrettyJSONResponse)
-async def health_check():
-    """Check the health status of the API and loaded models."""
-    device = str(image_model.device) if image_model else "not loaded"
-    logger.info("Health check: status=healthy, device=%s", device)
-    return HealthResponse(
-        status="healthy",
-        image_model=IMAGE_CKPT,
-        text_model=TEXT_CKPT,
-        device=device,
-    ).model_dump()
+    """Simple ping endpoint - returns healthy only after models are loaded."""
+    if image_model is None or text_model is None:
+        return {"status": "loading"}
+    return {"status": "healthy"}
 
 
 @app.post("/embed", response_model=EmbedResponse, response_class=PrettyJSONResponse)
@@ -244,27 +246,29 @@ async def create_embeddings(request: EmbedRequest):
     """
     Generate embeddings for text and/or images.
     
-    Accepts either a single item or an array of items. Each item can contain:
+    Accepts an array of items. Each item must contain:
+    - id: Unique identifier for the item
+    
+    And at least one of:
     - image_url: URL to fetch the image from
     - image_base64: Base64 encoded image data
     - text_input: Text to generate embeddings for
     
-    Returns normalized embedding vectors for each input.
+    Returns normalized embedding vectors for each input with matching id.
     """
     # Generate request ID and start timing
     request_id = str(uuid.uuid4())[:8]
     start_time = time.perf_counter()
     
-    # Normalize input to list
-    items = request.items if isinstance(request.items, list) else [request.items]
+    items = request.items
     
     # Count request types
     num_images = sum(1 for item in items if item.image_url or item.image_base64)
     num_texts = sum(1 for item in items if item.text_input)
     
     logger.info(
-        "[%s] Request received: %d item(s) - %d image(s), %d text(s)",
-        request_id, len(items), num_images, num_texts
+        "[%s] Request received: %d item(s) - %d image(s), %d text(s), mode=%s",
+        request_id, len(items), num_images, num_texts, request.embed_mode.value
     )
     
     results = []
@@ -274,8 +278,9 @@ async def create_embeddings(request: EmbedRequest):
         text_emb = None
         text_dims = None
         
-        # Process image if provided
-        if item.image_url or item.image_base64:
+        # Process image if provided and mode allows
+        should_process_image = request.embed_mode in (EmbedMode.IMAGE_ONLY, EmbedMode.BOTH)
+        if should_process_image and (item.image_url or item.image_base64):
             source = "url" if item.image_url else "base64"
             logger.info("[%s] Processing image %d/%d (%s)", request_id, idx + 1, len(items), source)
             
@@ -287,8 +292,9 @@ async def create_embeddings(request: EmbedRequest):
             image_emb = compute_image_embedding(image)
             image_dims = len(image_emb)
         
-        # Process text if provided
-        if item.text_input:
+        # Process text if provided and mode allows
+        should_process_text = request.embed_mode in (EmbedMode.TEXT_ONLY, EmbedMode.BOTH)
+        if should_process_text and item.text_input:
             text_preview = item.text_input[:50] + "..." if len(item.text_input) > 50 else item.text_input
             logger.info("[%s] Processing text %d/%d: '%s'", request_id, idx + 1, len(items), text_preview)
             
@@ -296,6 +302,7 @@ async def create_embeddings(request: EmbedRequest):
             text_dims = len(text_emb)
         
         result = EmbedResult(
+            id=item.id,
             image_embedding=image_emb,
             image_dimensions=image_dims,
             text_embedding=text_emb,
@@ -309,7 +316,6 @@ async def create_embeddings(request: EmbedRequest):
     response = EmbedResponse(results=results)
     # Use model_dump to include None values explicitly
     return response.model_dump()
-
 
 if __name__ == "__main__":
     import uvicorn
